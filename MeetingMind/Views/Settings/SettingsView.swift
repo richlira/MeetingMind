@@ -312,7 +312,7 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section {
             HStack {
-                Text("MeetingMind")
+                Text("Meeting Mind AI")
                     .font(.headline)
                 Spacer()
                 Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")

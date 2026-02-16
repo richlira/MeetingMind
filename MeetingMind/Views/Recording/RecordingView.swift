@@ -114,7 +114,7 @@ struct RecordingView: View {
                             .padding(.top, 4)
 
                         } else if let missing = missingKeyDescription {
-                            Text("Welcome to MeetingMind")
+                            Text("Welcome to Meeting Mind AI")
                                 .font(.title2.weight(.semibold))
                             Text("Record conversations, get live AI questions, and auto-generated summaries.")
                                 .font(.subheadline)
@@ -157,7 +157,7 @@ struct RecordingView: View {
                 }
             }
             .background(Color(.systemBackground))
-            .navigationTitle("MeetingMind")
+            .navigationTitle("Meeting Mind AI")
             .navigationBarTitleDisplayMode(.inline)
             .alert("Error", isPresented: .init(
                 get: { sessionManager.error != nil },
