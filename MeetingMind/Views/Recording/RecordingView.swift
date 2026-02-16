@@ -150,11 +150,13 @@ struct RecordingView: View {
             .overlay(alignment: .topTrailing) {
                 if badgeCount > 0 {
                     Text("\(badgeCount)")
-                        .font(.caption2.weight(.bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.white)
-                        .background(Color(.systemRed), in: Circle())
-                        .frame(minWidth: 18, minHeight: 18)
-                        .offset(x: 6, y: -6)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(.systemRed))
+                        .clipShape(Capsule())
+                        .offset(x: 10, y: -10)
                 }
             }
         }
