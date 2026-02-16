@@ -1,6 +1,6 @@
-<!-- ![MeetingMind Icon](assets/icon.png) -->
+<!-- ![Meeting Mind AI Icon](assets/icon.png) -->
 
-# MeetingMind
+# Meeting Mind AI
 
 **AI-powered meeting assistant that listens, questions, and summarizes — running on iPhone with swappable cloud and on-device providers.**
 
@@ -12,10 +12,13 @@
 
 ---
 
-<!-- ![Recording](assets/screenshots/recording.png) -->
-<!-- ![Questions](assets/screenshots/questions.png) -->
-<!-- ![Summary](assets/screenshots/summary.png) -->
-<!-- ![Settings](assets/screenshots/settings.png) -->
+<p align="center">
+  <img src="assets/screenshots/record.png" width="250" alt="Record" />
+  &nbsp;&nbsp;
+  <img src="assets/screenshots/transcribe.png" width="250" alt="Transcribe" />
+  &nbsp;&nbsp;
+  <img src="assets/screenshots/review.png" width="250" alt="Review" />
+</p>
 
 ## What It Does
 
@@ -24,11 +27,11 @@
 - **Produces a structured meeting summary** — key points, action items, and detected participants, generated automatically when recording stops.
 - **Chat with AI about the meeting afterwards** — ask follow-up questions with the full transcript as context.
 - **Works with 4 provider combinations** — cloud, on-device, or hybrid. Mix and match transcription and AI providers to balance quality, privacy, and cost.
-- **Zero-config on capable devices** — on iPhone 15 Pro and newer with Apple Intelligence enabled, MeetingMind auto-selects on-device providers on first launch. No API keys, no setup — just tap record.
+- **Zero-config on capable devices** — on iPhone 15 Pro and newer with Apple Intelligence enabled, Meeting Mind AI auto-selects on-device providers on first launch. No API keys, no setup — just tap record.
 
 ## Architecture
 
-MeetingMind uses a protocol-oriented design where transcription and AI are abstracted behind swappable providers. The `SessionManager` orchestrates the full pipeline and handles automatic fallback from on-device to cloud providers.
+Meeting Mind AI uses a protocol-oriented design where transcription and AI are abstracted behind swappable providers. The `SessionManager` orchestrates the full pipeline and handles automatic fallback from on-device to cloud providers.
 
 ```mermaid
 graph LR
