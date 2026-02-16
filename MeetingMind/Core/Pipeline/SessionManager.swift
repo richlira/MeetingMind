@@ -17,7 +17,7 @@ final class SessionManager {
     var error: String?
     var currentSession: Session?
     var recordingDuration: TimeInterval = 0
-    var summaryReady = false
+    var readyToNavigate = false
 
     // Dependencies
     private let audioManager = AudioManager()
@@ -60,7 +60,7 @@ final class SessionManager {
         wordCountSinceLastQuestion = 0
         segmentOrder = 0
         error = nil
-        summaryReady = false
+        readyToNavigate = false
         isStreamingMode = false
 
         do {
@@ -94,21 +94,37 @@ final class SessionManager {
         }
     }
 
-    /// Stop recording and generate summary
-    func stopRecording(modelContext: ModelContext) async {
+    /// Stop recording and navigate immediately.
+    /// Saves session with `.processing` status and signals navigation.
+    /// Transcription finalization + summary generation run in background via `finalizeInBackground`.
+    func stopRecording(modelContext: ModelContext) {
         isRecording = false
-        isProcessing = true
         timerTask?.cancel()
 
-        print("[SUMMARY-DEBUG-1] Recording stopped")
+        guard let session = currentSession else { return }
 
+        // Save what we have so far (transcript accumulated during recording)
+        session.status = .processing
+        session.duration = recordingDuration
+        session.transcriptText = isStreamingMode ? confirmedTranscript : transcriptText
+
+        if let audioURL = audioManager.fullRecordingURL {
+            session.audioFilePath = audioURL.lastPathComponent
+        }
+
+        try? modelContext.save()
+        readyToNavigate = true
+        print("[SessionManager] Session saved, navigating immediately")
+    }
+
+    /// Finalize transcription and generate summary in background.
+    /// Called after navigation to SessionDetailView — updates session via SwiftData.
+    func finalizeInBackground(session: Session, modelContext: ModelContext) async {
+        // Phase 1: Finalize transcription
         if isStreamingMode {
-            // Streaming mode: stop audio (finishes buffer stream),
-            // then wait for transcription to process remaining audio
             _ = audioManager.stopRecording()
             print("[SessionManager] Audio stopped, waiting for streaming transcription to finish...")
 
-            // Wait for streaming to finish with 5-second safety timeout
             let streamingCompleted = await withTaskGroup(of: Bool.self) { group in
                 group.addTask {
                     await self.transcriptionTask?.value
@@ -129,55 +145,47 @@ final class SessionManager {
                 await transcriptionTask?.value
             }
             transcriptionTask = nil
-            print("[SessionManager] Streaming transcription finished")
-
-            // Use confirmed transcript (no partials)
             transcriptText = confirmedTranscript
-            print("[SUMMARY-DEBUG-2] Confirmed transcript word count: \(confirmedTranscript.split(separator: " ").count)")
-            print("[SUMMARY-DEBUG-3] Confirmed transcript is empty: \(confirmedTranscript.isEmpty)")
-            print("[SUMMARY-DEBUG-4] First 300 chars: \(String(confirmedTranscript.prefix(300)))")
         } else {
-            // Chunk mode: cancel loop, process last chunk
             transcriptionTask?.cancel()
             let lastChunkData = audioManager.stopRecording()
 
-            if let session = currentSession, let lastChunkData {
+            if let lastChunkData {
                 await transcribeChunk(lastChunkData, session: session, modelContext: modelContext)
             }
         }
 
-        guard let session = currentSession else {
-            isProcessing = false
-            return
-        }
-
-        session.status = .processing
-        session.duration = recordingDuration
-
-        if let audioURL = audioManager.fullRecordingURL {
-            session.audioFilePath = audioURL.lastPathComponent
-        }
-
+        // Update session with final transcript
         session.transcriptText = transcriptText
+        try? modelContext.save()
+        print("[SessionManager] Transcription finalized: \(transcriptText.split(separator: " ").count) words")
 
+        // Phase 2: Generate summary
         guard !transcriptText.isEmpty else {
             print("[SessionManager] Empty transcript, skipping summary")
             session.status = .completed
             try? modelContext.save()
-            isProcessing = false
-            summaryReady = true
             return
         }
 
-        // Generate summary with timeout
-        let wordCount = transcriptText.split(separator: " ").count
-        print("[SessionManager] Generating summary, transcript: \(wordCount) words")
         await generateSummaryWithTimeout(session: session, modelContext: modelContext)
 
         session.status = .completed
         try? modelContext.save()
+        print("[SessionManager] Summary complete, session status updated")
+    }
+
+    /// Reset all state for a fresh recording screen.
+    func resetForNewRecording() {
+        transcriptText = ""
+        confirmedTranscript = ""
+        liveQuestions = []
+        recordingDuration = 0
+        currentSession = nil
+        readyToNavigate = false
+        error = nil
         isProcessing = false
-        summaryReady = true
+        isRecording = false
     }
 
     // MARK: - Streaming Transcription

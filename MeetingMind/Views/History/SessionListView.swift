@@ -9,9 +9,11 @@ import SwiftData
 struct SessionListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Session.date, order: .reverse) private var sessions: [Session]
+    @State private var navigationPath = NavigationPath()
+    var router: NavigationRouter
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             Group {
                 if sessions.isEmpty {
                     ContentUnavailableView(
@@ -22,7 +24,7 @@ struct SessionListView: View {
                 } else {
                     List {
                         ForEach(sessions) { session in
-                            NavigationLink(destination: SessionDetailView(session: session)) {
+                            NavigationLink(value: session.id) {
                                 SessionRow(session: session)
                             }
                         }
@@ -31,6 +33,26 @@ struct SessionListView: View {
                 }
             }
             .navigationTitle("History")
+            .navigationDestination(for: UUID.self) { sessionID in
+                if let session = sessions.first(where: { $0.id == sessionID }) {
+                    SessionDetailView(session: session)
+                }
+            }
+        }
+        .onAppear {
+            navigateToPendingIfNeeded()
+        }
+        .onChange(of: router.pendingSession) {
+            navigateToPendingIfNeeded()
+        }
+    }
+
+    private func navigateToPendingIfNeeded() {
+        guard let session = router.pendingSession else { return }
+        router.pendingSession = nil
+        // Delay lets the NavigationStack fully initialize after tab switch
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            navigationPath.append(session.id)
         }
     }
 

@@ -25,7 +25,16 @@ struct FoundationProvider: AIProvider {
         }
 
         let response = try await session.respond(to: prompt)
-        let trimmed = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Strip markdown formatting if model wraps the response
+        if trimmed.hasPrefix("```") {
+            trimmed = extractJSON(from: trimmed)
+        }
+        // Strip surrounding quotes if model wraps in quotes
+        if trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"") && trimmed.count > 2 {
+            trimmed = String(trimmed.dropFirst().dropLast())
+        }
 
         if trimmed.uppercased().contains("NO_QUESTION") || trimmed.isEmpty {
             return nil
@@ -35,7 +44,7 @@ struct FoundationProvider: AIProvider {
 
     func generateSummary(transcript: String) async throws -> SummaryData {
         let session = LanguageModelSession(instructions: """
-            Summarize conversation transcripts. Respond ONLY with valid JSON, no markdown. \
+            Summarize conversation transcripts. Respond ONLY with valid JSON, no markdown, no code fences. \
             Format: {"summary":"...","keyPoints":["..."],"actionItems":["..."],"participants":["..."]}
             Rules: participants = ONLY people speaking, NOT mentioned. \
             Empty array if no action items. Write in the SAME language as the transcript. \
@@ -44,17 +53,22 @@ struct FoundationProvider: AIProvider {
 
         let response = try await session.respond(to: "Summarize:\n\n\(transcript)")
         let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        print("[Foundation] Raw response: \(String(text.prefix(200)))")
 
         // Strip markdown code fences if present
         let jsonString = extractJSON(from: text)
         guard let jsonData = jsonString.data(using: .utf8) else {
+            print("[Foundation] JSON parse failed, using fallback")
             return SummaryData(summary: text, keyPoints: [], actionItems: [], participants: [])
         }
 
         do {
-            return try JSONDecoder().decode(SummaryData.self, from: jsonData)
+            let result = try JSONDecoder().decode(SummaryData.self, from: jsonData)
+            print("[Foundation] Parsed summary successfully")
+            return result
         } catch {
-            return SummaryData(summary: text, keyPoints: [], actionItems: [], participants: [])
+            print("[Foundation] JSON parse failed: \(error), using fallback")
+            return SummaryData(summary: jsonString, keyPoints: [], actionItems: [], participants: [])
         }
     }
 

@@ -20,6 +20,18 @@ struct SummaryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                // Loading state while summary generates in background
+                if session.status == .processing {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Generating summary...")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                }
+
                 // Summary
                 if let summary = session.summaryText, !summary.isEmpty {
                     Section {
@@ -97,7 +109,7 @@ struct SummaryView: View {
                 }
 
                 // Empty state
-                if session.summaryText == nil && session.status == .completed {
+                if session.summaryText == nil && session.status != .processing {
                     ContentUnavailableView(
                         "No Summary Available",
                         systemImage: "doc.text",

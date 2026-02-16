@@ -9,8 +9,9 @@ import SwiftData
 struct RecordingView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var sessionManager = SessionManager()
-    @State private var showResults = false
     @State private var selectedTab = 0
+    @State private var showAPIKeyAlert = false
+    var router: NavigationRouter
 
     var body: some View {
         NavigationStack {
@@ -23,9 +24,7 @@ struct RecordingView: View {
 
                 // MARK: - Status indicator
                 Group {
-                    if sessionManager.isProcessing {
-                        ProgressView("Generating summary...")
-                    } else if sessionManager.isRecording {
+                    if sessionManager.isRecording {
                         HStack(spacing: 6) {
                             Circle()
                                 .fill(Color(.systemRed))
@@ -44,10 +43,12 @@ struct RecordingView: View {
 
                 // MARK: - Record / Stop button
                 Button {
-                    Task {
-                        if sessionManager.isRecording {
-                            await sessionManager.stopRecording(modelContext: modelContext)
-                        } else {
+                    if sessionManager.isRecording {
+                        stopAndNavigate()
+                    } else if needsAPIKeys {
+                        showAPIKeyAlert = true
+                    } else {
+                        Task {
                             await sessionManager.startRecording(modelContext: modelContext)
                         }
                     }
@@ -68,7 +69,6 @@ struct RecordingView: View {
                         }
                     }
                 }
-                .disabled(sessionManager.isProcessing)
                 .padding(.top, 16)
 
                 // MARK: - Tab switcher
@@ -90,22 +90,75 @@ struct RecordingView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
                 } else {
-                    Spacer()
+                    // Empty state / welcome — adaptive to device capabilities
+                    VStack(spacing: 16) {
+                        Spacer()
+
+                        if isFullyOnDevice {
+                            Image(systemName: "lock.shield.fill")
+                                .font(.largeTitle)
+                                .foregroundStyle(.green)
+                            Text("Ready to Record")
+                                .font(.title2.weight(.semibold))
+                            Text("Your iPhone supports fully on-device AI \u{2014} no API keys needed. Your conversations stay private.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
+
+                            Button("Customize Providers") {
+                                router.selectedTab = 2
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+
+                        } else if let missing = missingKeyDescription {
+                            Text("Welcome to MeetingMind")
+                                .font(.title2.weight(.semibold))
+                            Text("Record conversations, get live AI questions, and auto-generated summaries.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
+
+                            if DeviceCapability.hasAnyOnDeviceOption {
+                                Text("Your iPhone supports on-device AI. Switch to on-device providers in Settings, or add your API keys.")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 32)
+                            } else {
+                                Text(missing)
+                                    .font(.callout)
+                                    .foregroundStyle(.orange)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 32)
+                            }
+
+                            Button("Go to Settings") {
+                                router.selectedTab = 2
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.top, 8)
+
+                        } else {
+                            Text("Ready to Record")
+                                .font(.title2.weight(.semibold))
+                            Text("Tap the button above to start recording your meeting.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
+                        }
+
+                        Spacer()
+                    }
                 }
             }
             .background(Color(.systemBackground))
             .navigationTitle("MeetingMind")
             .navigationBarTitleDisplayMode(.inline)
-            .onChange(of: sessionManager.summaryReady) { _, ready in
-                if ready {
-                    showResults = true
-                }
-            }
-            .navigationDestination(isPresented: $showResults) {
-                if let session = sessionManager.currentSession {
-                    SessionDetailView(session: session)
-                }
-            }
             .alert("Error", isPresented: .init(
                 get: { sessionManager.error != nil },
                 set: { if !$0 { sessionManager.error = nil } }
@@ -113,6 +166,63 @@ struct RecordingView: View {
                 Button("OK") { sessionManager.error = nil }
             } message: {
                 Text(sessionManager.error ?? "")
+            }
+            .alert("API Keys Required", isPresented: $showAPIKeyAlert) {
+                Button("Go to Settings") {
+                    router.selectedTab = 2
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Please add your API keys in Settings before recording.")
+            }
+        }
+    }
+
+    // MARK: - API Key Check
+
+    private var needsAPIKeys: Bool {
+        let transcription = ProviderSelection.transcriptionProvider
+        let ai = ProviderSelection.aiProvider
+        let needsOpenAI = transcription == .whisper && KeychainManager.read(key: .openAIAPIKey) == nil
+        let needsClaude = ai == .claude && KeychainManager.read(key: .anthropicAPIKey) == nil
+        return needsOpenAI || needsClaude
+    }
+
+    private var isFullyOnDevice: Bool {
+        ProviderSelection.transcriptionProvider == .speechAnalyzer
+        && ProviderSelection.aiProvider == .foundation
+    }
+
+    private var missingKeyDescription: String? {
+        let needsOpenAI = ProviderSelection.transcriptionProvider == .whisper
+            && KeychainManager.read(key: .openAIAPIKey) == nil
+        let needsClaude = ProviderSelection.aiProvider == .claude
+            && KeychainManager.read(key: .anthropicAPIKey) == nil
+        if needsOpenAI && needsClaude { return "Add your OpenAI and Anthropic API keys to get started." }
+        if needsOpenAI { return "Add your OpenAI API key for transcription." }
+        if needsClaude { return "Add your Anthropic API key for AI features." }
+        return nil
+    }
+
+    // MARK: - Stop & Navigate
+
+    private func stopAndNavigate() {
+        let session = sessionManager.currentSession
+        sessionManager.stopRecording(modelContext: modelContext)
+
+        // Reset recording screen immediately
+        sessionManager.resetForNewRecording()
+        selectedTab = 0
+
+        // Switch to History tab and push session detail
+        if let session {
+            router.pendingSession = session
+            router.selectedTab = 1
+
+            // Finalize transcription + summary in background
+            let ctx = modelContext
+            Task {
+                await sessionManager.finalizeInBackground(session: session, modelContext: ctx)
             }
         }
     }
