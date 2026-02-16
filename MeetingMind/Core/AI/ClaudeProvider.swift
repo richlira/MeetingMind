@@ -53,6 +53,7 @@ struct ClaudeProvider: AIProvider {
     }
 
     func generateSummary(transcript: String) async throws -> SummaryData {
+        print("[SUMMARY-DEBUG-6] ClaudeProvider.generateSummary received \(transcript.count) characters")
         let system = """
         Generate a structured summary from this conversation transcript. \
         Respond ONLY with valid JSON (no markdown, no code fences) in this exact format:
@@ -152,12 +153,16 @@ struct ClaudeProvider: AIProvider {
         ]
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        print("[SUMMARY-DEBUG-7] About to send HTTP request to Claude API")
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
+            print("[SUMMARY-DEBUG-8] Claude API responded but not HTTPURLResponse")
             throw ClaudeError.invalidResponse
         }
+
+        print("[SUMMARY-DEBUG-8] Claude API responded with status: \(httpResponse.statusCode)")
 
         guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"

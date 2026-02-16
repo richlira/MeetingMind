@@ -14,12 +14,16 @@ final class AudioManager {
     private var fullRecordingFile: AVAudioFile?
     private var currentChunkFile: AVAudioFile?
     private var currentChunkURL: URL?
-    private var recordingFormat: AVAudioFormat?
+    private(set) var recordingFormat: AVAudioFormat?
     private var fileSettings: [String: Any] = [:]
 
     private(set) var fullRecordingURL: URL?
     private(set) var isRecording = false
     private(set) var recordingStartTime: Date?
+
+    // Live buffer stream for streaming transcription providers
+    private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
+    private(set) var audioBufferStream: AsyncStream<AVAudioPCMBuffer>?
 
     var elapsedTime: TimeInterval {
         guard let start = recordingStartTime, isRecording else { return 0 }
@@ -77,6 +81,11 @@ final class AudioManager {
         let chunkURL = Self.newFileURL(prefix: "chunk")
         currentChunkFile = try AVAudioFile(forWriting: chunkURL, settings: fileSettings)
         currentChunkURL = chunkURL
+
+        // Create live buffer stream (for streaming transcription providers)
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+        audioBufferStream = stream
+        bufferContinuation = continuation
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             self?.handleBuffer(buffer)
@@ -142,6 +151,9 @@ final class AudioManager {
         currentChunkURL = nil
         recordingFormat = nil
         fileSettings = [:]
+        bufferContinuation?.finish()
+        bufferContinuation = nil
+        audioBufferStream = nil
         bufferLock.unlock()
 
         isRecording = false
@@ -165,6 +177,7 @@ final class AudioManager {
         defer { bufferLock.unlock() }
         try? fullRecordingFile?.write(from: buffer)
         try? currentChunkFile?.write(from: buffer)
+        bufferContinuation?.yield(buffer)
     }
 
     private static func newFileURL(prefix: String) -> URL {

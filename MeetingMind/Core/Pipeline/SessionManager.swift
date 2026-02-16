@@ -3,6 +3,7 @@
 //  MeetingMind
 //
 
+import AVFoundation
 import Foundation
 import SwiftData
 
@@ -29,6 +30,10 @@ final class SessionManager {
     private var wordCountSinceLastQuestion = 0
     private var segmentOrder = 0
     private let questionWordThreshold = 50
+    private var isStreamingMode = false
+    private var confirmedTranscript = ""
+
+    // MARK: - Public
 
     /// Start a new recording session
     func startRecording(modelContext: ModelContext) async {
@@ -50,20 +55,37 @@ final class SessionManager {
 
         // Reset state
         transcriptText = ""
+        confirmedTranscript = ""
         liveQuestions = []
         wordCountSinceLastQuestion = 0
         segmentOrder = 0
         error = nil
         summaryReady = false
+        isStreamingMode = false
 
         do {
             try await audioManager.startRecording()
             isRecording = true
 
-            // Start transcription loop
-            startTranscriptionLoop(session: session, modelContext: modelContext)
+            // Choose transcription mode based on provider type
+            if let streaming = transcriptionProvider as? StreamingTranscriptionProvider,
+               let bufferStream = audioManager.audioBufferStream,
+               let format = audioManager.recordingFormat {
+                isStreamingMode = true
+                print("[SessionManager] Starting STREAMING transcription")
+                startStreamingTranscription(
+                    streaming,
+                    bufferStream: bufferStream,
+                    format: format,
+                    session: session,
+                    modelContext: modelContext
+                )
+            } else {
+                isStreamingMode = false
+                print("[SessionManager] Starting CHUNK transcription")
+                startTranscriptionLoop(session: session, modelContext: modelContext)
+            }
 
-            // Start timer
             startTimer()
         } catch {
             self.error = "Failed to start recording: \(error.localizedDescription)"
@@ -74,14 +96,55 @@ final class SessionManager {
 
     /// Stop recording and generate summary
     func stopRecording(modelContext: ModelContext) async {
-        // Immediately show processing state (Issue 2)
         isRecording = false
         isProcessing = true
-        transcriptionTask?.cancel()
         timerTask?.cancel()
 
-        // Stop audio and get last chunk
-        let lastChunkData = audioManager.stopRecording()
+        print("[SUMMARY-DEBUG-1] Recording stopped")
+
+        if isStreamingMode {
+            // Streaming mode: stop audio (finishes buffer stream),
+            // then wait for transcription to process remaining audio
+            _ = audioManager.stopRecording()
+            print("[SessionManager] Audio stopped, waiting for streaming transcription to finish...")
+
+            // Wait for streaming to finish with 5-second safety timeout
+            let streamingCompleted = await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    await self.transcriptionTask?.value
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(5))
+                    return false
+                }
+                let result = await group.next() ?? false
+                group.cancelAll()
+                return result
+            }
+
+            if !streamingCompleted {
+                print("[SessionManager] WARNING: Streaming timed out after 5s, forcing completion")
+                transcriptionTask?.cancel()
+                await transcriptionTask?.value
+            }
+            transcriptionTask = nil
+            print("[SessionManager] Streaming transcription finished")
+
+            // Use confirmed transcript (no partials)
+            transcriptText = confirmedTranscript
+            print("[SUMMARY-DEBUG-2] Confirmed transcript word count: \(confirmedTranscript.split(separator: " ").count)")
+            print("[SUMMARY-DEBUG-3] Confirmed transcript is empty: \(confirmedTranscript.isEmpty)")
+            print("[SUMMARY-DEBUG-4] First 300 chars: \(String(confirmedTranscript.prefix(300)))")
+        } else {
+            // Chunk mode: cancel loop, process last chunk
+            transcriptionTask?.cancel()
+            let lastChunkData = audioManager.stopRecording()
+
+            if let session = currentSession, let lastChunkData {
+                await transcribeChunk(lastChunkData, session: session, modelContext: modelContext)
+            }
+        }
 
         guard let session = currentSession else {
             isProcessing = false
@@ -95,14 +158,10 @@ final class SessionManager {
             session.audioFilePath = audioURL.lastPathComponent
         }
 
-        // Transcribe last chunk
-        if let lastChunkData {
-            await transcribeChunk(lastChunkData, session: session, modelContext: modelContext)
-        }
-
         session.transcriptText = transcriptText
 
         guard !transcriptText.isEmpty else {
+            print("[SessionManager] Empty transcript, skipping summary")
             session.status = .completed
             try? modelContext.save()
             isProcessing = false
@@ -110,18 +169,10 @@ final class SessionManager {
             return
         }
 
-        // Generate summary
-        do {
-            if let ai = aiProvider {
-                let summary = try await ai.generateSummary(transcript: transcriptText)
-                session.summaryText = summary.summary
-                session.keyPoints = summary.keyPoints
-                session.actionItems = summary.actionItems
-                session.participants = summary.participants
-            }
-        } catch {
-            self.error = "Failed to generate summary: \(error.localizedDescription)"
-        }
+        // Generate summary with timeout
+        let wordCount = transcriptText.split(separator: " ").count
+        print("[SessionManager] Generating summary, transcript: \(wordCount) words")
+        await generateSummaryWithTimeout(session: session, modelContext: modelContext)
 
         session.status = .completed
         try? modelContext.save()
@@ -129,7 +180,66 @@ final class SessionManager {
         summaryReady = true
     }
 
-    // MARK: - Private
+    // MARK: - Streaming Transcription
+
+    private func startStreamingTranscription(
+        _ provider: StreamingTranscriptionProvider,
+        bufferStream: AsyncStream<AVAudioPCMBuffer>,
+        format: AVAudioFormat,
+        session: Session,
+        modelContext: ModelContext
+    ) {
+        confirmedTranscript = ""
+        wordCountSinceLastQuestion = 0
+        var lastConfirmedWordCount = 0
+
+        let updates = provider.startStreaming(audioBuffers: bufferStream, audioFormat: format)
+
+        transcriptionTask = Task {
+            for await update in updates {
+                guard !Task.isCancelled else { break }
+
+                // Update UI: confirmed + partial (gives "live typing" effect)
+                if update.partialText.isEmpty {
+                    transcriptText = update.confirmedText
+                } else if update.confirmedText.isEmpty {
+                    transcriptText = update.partialText
+                } else {
+                    transcriptText = update.confirmedText + " " + update.partialText
+                }
+
+                if update.isFinal {
+                    confirmedTranscript = update.confirmedText
+                    session.transcriptText = confirmedTranscript
+
+                    // Save segment
+                    if !update.segmentText.isEmpty {
+                        let segment = TranscriptSegment(text: update.segmentText, order: segmentOrder)
+                        segment.session = session
+                        modelContext.insert(segment)
+                        segmentOrder += 1
+                    }
+
+                    // Track words for question generation (confirmed text only)
+                    let currentWordCount = confirmedTranscript.split(separator: " ").count
+                    let newWords = currentWordCount - lastConfirmedWordCount
+                    lastConfirmedWordCount = currentWordCount
+                    wordCountSinceLastQuestion += newWords
+
+                    print("[SessionManager] Streaming: +\(newWords) words, accumulated: \(wordCountSinceLastQuestion)/\(questionWordThreshold), total: \(currentWordCount)")
+
+                    if wordCountSinceLastQuestion >= questionWordThreshold {
+                        wordCountSinceLastQuestion = 0
+                        // Use confirmed text for question generation
+                        await generateQuestion(transcript: confirmedTranscript, session: session, modelContext: modelContext)
+                    }
+                }
+            }
+            print("[SessionManager] Streaming transcription task ended")
+        }
+    }
+
+    // MARK: - Chunk Transcription (Whisper)
 
     private func startTranscriptionLoop(session: Session, modelContext: ModelContext) {
         transcriptionTask = Task {
@@ -155,55 +265,55 @@ final class SessionManager {
         guard let provider = transcriptionProvider else { return }
 
         do {
-            // Use previous transcript as context for better continuity
             let prompt = transcriptText.isEmpty ? nil : transcriptText
             let text = try await provider.transcribe(audioData: data, prompt: prompt)
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
-            // Append to transcript
             if !transcriptText.isEmpty {
                 transcriptText += " "
             }
             transcriptText += text
 
-            // Save segment
             let segment = TranscriptSegment(text: text, order: segmentOrder)
             segment.session = session
             modelContext.insert(segment)
             segmentOrder += 1
 
-            // Update session
             session?.transcriptText = transcriptText
 
-            // Check if we should generate a question
             let chunkWordCount = text.split(separator: " ").count
             wordCountSinceLastQuestion += chunkWordCount
             let totalWords = transcriptText.split(separator: " ").count
-            print("[SessionManager] Chunk: +\(chunkWordCount) words, accumulated: \(wordCountSinceLastQuestion)/\(questionWordThreshold), total transcript: \(totalWords) words")
+            print("[SessionManager] Chunk: +\(chunkWordCount) words, accumulated: \(wordCountSinceLastQuestion)/\(questionWordThreshold), total: \(totalWords)")
 
             if wordCountSinceLastQuestion >= questionWordThreshold {
-                print("[SessionManager] Triggering question generation with \(totalWords) words of context")
                 wordCountSinceLastQuestion = 0
-                await generateQuestion(session: session, modelContext: modelContext)
+                await generateQuestion(transcript: transcriptText, session: session, modelContext: modelContext)
             }
         } catch {
             print("[SessionManager] Transcription error: \(error)")
+            if error is SpeechAnalyzerError {
+                print("[SessionManager] On-device transcription failed, falling back to cloud")
+                transcriptionProvider = ProviderConfig.makeTranscriptionProvider()
+            }
         }
     }
 
-    private func generateQuestion(session: Session?, modelContext: ModelContext) async {
+    // MARK: - Question Generation
+
+    private func generateQuestion(transcript: String, session: Session?, modelContext: ModelContext) async {
         guard let ai = aiProvider else {
             print("[SessionManager] No AI provider available")
             return
         }
 
         do {
-            let question = try await ai.generateQuestion(context: transcriptText, previousQuestions: liveQuestions)
-            print("[SessionManager] Claude response: \(question ?? "NO_QUESTION")")
+            let question = try await ai.generateQuestion(context: transcript, previousQuestions: liveQuestions)
+            print("[SessionManager] AI response: \(question ?? "NO_QUESTION")")
 
             if let question {
                 liveQuestions.append(question)
-                print("[SessionManager] Question added to UI. Total questions: \(liveQuestions.count)")
+                print("[SessionManager] Question added. Total: \(liveQuestions.count)")
 
                 let questionModel = Question(text: question)
                 questionModel.session = session
@@ -211,8 +321,67 @@ final class SessionManager {
             }
         } catch {
             print("[SessionManager] Question generation error: \(error)")
+            if error is FoundationError {
+                print("[SessionManager] On-device AI failed, falling back to cloud")
+                aiProvider = ProviderConfig.makeAIProvider()
+            }
         }
     }
+
+    // MARK: - Summary Generation (with timeout)
+
+    private func generateSummaryWithTimeout(session: Session, modelContext: ModelContext) async {
+        guard let ai = aiProvider else { return }
+
+        let transcript = transcriptText
+
+        // Race: summary vs 30-second timeout
+        print("[SUMMARY-DEBUG-5] Calling generateSummary now...")
+        let summaryTask = Task {
+            try await ai.generateSummary(transcript: transcript)
+        }
+
+        let timeoutTask = Task {
+            try await Task.sleep(for: .seconds(30))
+            summaryTask.cancel()
+        }
+
+        do {
+            let summary = try await summaryTask.value
+            timeoutTask.cancel()
+            session.summaryText = summary.summary
+            session.keyPoints = summary.keyPoints
+            session.actionItems = summary.actionItems
+            session.participants = summary.participants
+            print("[SessionManager] Summary generated successfully")
+        } catch {
+            timeoutTask.cancel()
+
+            // If on-device AI failed, retry with cloud fallback
+            if error is FoundationError {
+                print("[SessionManager] On-device AI failed for summary, falling back to cloud")
+                aiProvider = ProviderConfig.makeAIProvider()
+                if let ai = aiProvider {
+                    do {
+                        let summary = try await ai.generateSummary(transcript: transcript)
+                        session.summaryText = summary.summary
+                        session.keyPoints = summary.keyPoints
+                        session.actionItems = summary.actionItems
+                        session.participants = summary.participants
+                    } catch {
+                        self.error = "Failed to generate summary: \(error.localizedDescription)"
+                    }
+                }
+            } else if error is CancellationError {
+                self.error = "Summary generation timed out. Your transcript is saved."
+                print("[SessionManager] Summary timed out after 30s")
+            } else {
+                self.error = "Failed to generate summary: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    // MARK: - Timer
 
     private func startTimer() {
         recordingDuration = 0
