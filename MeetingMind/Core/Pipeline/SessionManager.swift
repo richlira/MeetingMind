@@ -120,6 +120,13 @@ final class SessionManager {
     /// Finalize transcription and generate summary in background.
     /// Called after navigation to SessionDetailView — updates session via SwiftData.
     func finalizeInBackground(session: Session, modelContext: ModelContext) async {
+        // Restore transcript if resetForNewRecording() cleared it before we got here
+        if transcriptText.isEmpty && !session.transcriptText.isEmpty {
+            print("[SessionManager] Restoring transcript from session (\(session.transcriptText.split(separator: " ").count) words)")
+            transcriptText = session.transcriptText
+            if isStreamingMode { confirmedTranscript = session.transcriptText }
+        }
+
         // Phase 1: Finalize transcription
         if isStreamingMode {
             _ = audioManager.stopRecording()
@@ -145,7 +152,11 @@ final class SessionManager {
                 await transcriptionTask?.value
             }
             transcriptionTask = nil
-            transcriptText = confirmedTranscript
+
+            // Use whichever has more content
+            if confirmedTranscript.count > transcriptText.count {
+                transcriptText = confirmedTranscript
+            }
         } else {
             transcriptionTask?.cancel()
             let lastChunkData = audioManager.stopRecording()
@@ -155,13 +166,17 @@ final class SessionManager {
             }
         }
 
-        // Update session with final transcript
-        session.transcriptText = transcriptText
-        try? modelContext.save()
-        print("[SessionManager] Transcription finalized: \(transcriptText.split(separator: " ").count) words")
+        // Update session with final transcript (only if we have more content)
+        if transcriptText.count > session.transcriptText.count {
+            session.transcriptText = transcriptText
+            try? modelContext.save()
+        }
+
+        let transcript = session.transcriptText
+        print("[SessionManager] Transcription finalized: \(transcript.split(separator: " ").count) words")
 
         // Phase 2: Generate summary
-        guard !transcriptText.isEmpty else {
+        guard !transcript.isEmpty else {
             print("[SessionManager] Empty transcript, skipping summary")
             session.status = .completed
             try? modelContext.save()
@@ -339,12 +354,17 @@ final class SessionManager {
     // MARK: - Summary Generation (with timeout)
 
     private func generateSummaryWithTimeout(session: Session, modelContext: ModelContext) async {
-        guard let ai = aiProvider else { return }
+        guard let ai = aiProvider else {
+            print("[Summary] No AI provider available, skipping")
+            return
+        }
 
-        let transcript = transcriptText
+        let transcript = session.transcriptText
+        print("[Summary] Transcript word count: \(transcript.split(separator: " ").count)")
+        print("[Summary] Transcript first 200 chars: \(String(transcript.prefix(200)))")
+        print("[Summary] Using provider: \(type(of: ai))")
 
         // Race: summary vs 30-second timeout
-        print("[SUMMARY-DEBUG-5] Calling generateSummary now...")
         let summaryTask = Task {
             try await ai.generateSummary(transcript: transcript)
         }
@@ -361,13 +381,15 @@ final class SessionManager {
             session.keyPoints = summary.keyPoints
             session.actionItems = summary.actionItems
             session.participants = summary.participants
-            print("[SessionManager] Summary generated successfully")
+            print("[Summary] Generated successfully: \(String(summary.summary.prefix(100)))")
+            print("[Summary] Key points: \(summary.keyPoints.count), Action items: \(summary.actionItems.count)")
         } catch {
             timeoutTask.cancel()
 
             // If on-device AI failed, retry with cloud fallback
+            print("[Summary] Error: \(error)")
             if error is FoundationError {
-                print("[SessionManager] On-device AI failed for summary, falling back to cloud")
+                print("[Summary] On-device AI failed, falling back to cloud")
                 aiProvider = ProviderConfig.makeAIProvider()
                 if let ai = aiProvider {
                     do {

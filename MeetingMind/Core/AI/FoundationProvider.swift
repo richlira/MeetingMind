@@ -5,6 +5,7 @@
 
 import Foundation
 import FoundationModels
+import NaturalLanguage
 
 struct FoundationProvider: AIProvider {
 
@@ -43,12 +44,15 @@ struct FoundationProvider: AIProvider {
     }
 
     func generateSummary(transcript: String) async throws -> SummaryData {
+        let languageName = detectLanguageName(transcript)
+        let languageInstruction = "IMPORTANT: The transcript is in \(languageName). Write summary, keyPoints, and actionItems in \(languageName). Only JSON keys stay in English."
+
         let session = LanguageModelSession(instructions: """
             Summarize conversation transcripts. Respond ONLY with valid JSON, no markdown, no code fences. \
             Format: {"summary":"...","keyPoints":["..."],"actionItems":["..."],"participants":["..."]}
             Rules: participants = ONLY people speaking, NOT mentioned. \
-            Empty array if no action items. Write in the SAME language as the transcript. \
-            JSON keys stay in English.
+            Empty array if no action items. \
+            \(languageInstruction)
             """)
 
         let response = try await session.respond(to: "Summarize:\n\n\(transcript)")
@@ -104,6 +108,14 @@ struct FoundationProvider: AIProvider {
     }
 
     // MARK: - Private
+
+    /// Detect the dominant language name using NLLanguageRecognizer.
+    private func detectLanguageName(_ text: String) -> String {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(String(text.prefix(1000)))
+        guard let lang = recognizer.dominantLanguage else { return "English" }
+        return Locale.current.localizedString(forLanguageCode: lang.rawValue) ?? lang.rawValue
+    }
 
     private func extractJSON(from text: String) -> String {
         var cleaned = text
