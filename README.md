@@ -10,6 +10,8 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-green)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
+> **Coming soon to the App Store.** Star this repo to get notified when it launches.
+
 ---
 
 <p align="center">
