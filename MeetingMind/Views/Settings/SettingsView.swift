@@ -336,7 +336,7 @@ struct SettingsView: View {
                 }
             }
 
-            Link(destination: URL(string: "https://github.com/richlira/MeetingMind")!) {
+            Link(destination: URL(string: "https://github.com/richlira/MeetingMindAI")!) {
                 HStack {
                     Image(systemName: "chevron.left.forwardslash.chevron.right")
                         .foregroundStyle(.blue)

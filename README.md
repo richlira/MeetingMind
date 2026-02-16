@@ -86,7 +86,7 @@ protocol AIProvider: Sendable {
 ## Quick Start
 
 ```bash
-git clone https://github.com/richlira/MeetingMind.git
+git clone https://github.com/richlira/MeetingMindAI.git
 cd MeetingMind
 open MeetingMind.xcodeproj
 ```
@@ -251,7 +251,7 @@ Contributions are welcome! Here's how to get started:
 - Test on a physical device for on-device provider changes
 - Keep providers stateless where possible (structs over classes)
 
-See [open issues](https://github.com/richlira/MeetingMind/issues) for ideas on what to work on.
+See [open issues](https://github.com/richlira/MeetingMindAI/issues) for ideas on what to work on.
 
 ## License
 
